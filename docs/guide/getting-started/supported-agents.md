@@ -74,6 +74,14 @@ rtk init --copilot
 
 Writes one `.github/hooks/rtk-rewrite.json` serving both hosts: VS Code Copilot Chat reads its `PreToolUse` entry (transparent rewrite), GitHub Copilot CLI reads its `preToolUse` entry (deny-with-suggestion; the agent retries with `rtk`).
 
+Uninstall (project-scoped):
+
+```bash
+rtk init --uninstall --copilot
+```
+
+Removes `.github/hooks/rtk-rewrite.json` and the RTK block from `.github/copilot-instructions.md` (your own content is preserved).
+
 ### Gemini CLI
 
 ```bash

@@ -3951,6 +3951,82 @@ fn run_copilot_at(base: &Path, ctx: InitContext) -> Result<()> {
     Ok(())
 }
 
+/// Entry point for `rtk init --uninstall --copilot` (project-scoped, like install).
+pub fn uninstall_copilot(ctx: InitContext) -> Result<()> {
+    let InitContext { dry_run, .. } = ctx;
+    let removed = uninstall_copilot_at(Path::new("."), ctx)?;
+
+    if removed.is_empty() {
+        println!("RTK Copilot support was not installed (nothing to remove)");
+    } else {
+        let header = if dry_run {
+            "[dry-run] would uninstall RTK (GitHub Copilot):"
+        } else {
+            "RTK uninstalled (GitHub Copilot):"
+        };
+        println!("{}", header);
+        for item in &removed {
+            println!("  - {}", item);
+        }
+        if !dry_run {
+            println!("\nRestart your IDE or Copilot CLI session to apply changes.");
+        }
+    }
+
+    if dry_run {
+        print_dry_run_footer();
+    }
+    Ok(())
+}
+
+/// Same as [`uninstall_copilot`] but operates relative to an explicit base path.
+fn uninstall_copilot_at(base: &Path, ctx: InitContext) -> Result<Vec<String>> {
+    let InitContext { dry_run, .. } = ctx;
+    let github_dir = base.join(GITHUB_DIR);
+    let mut removed = Vec::new();
+
+    let hook_path = github_dir.join(HOOKS_SUBDIR).join(COPILOT_HOOK_FILE);
+    if hook_path.exists() {
+        if dry_run {
+            println!(
+                "[dry-run] would remove hook config: {}",
+                hook_path.display()
+            );
+        } else {
+            fs::remove_file(&hook_path)
+                .with_context(|| format!("Failed to remove hook: {}", hook_path.display()))?;
+        }
+        removed.push(format!("Hook config: {}", hook_path.display()));
+    }
+
+    let instructions_path = github_dir.join(COPILOT_INSTRUCTIONS_FILE);
+    if instructions_path.exists() {
+        let content = fs::read_to_string(&instructions_path)
+            .with_context(|| format!("Failed to read {}", instructions_path.display()))?;
+        if content.contains(RTK_BLOCK_START) {
+            let (cleaned, did_remove) = remove_rtk_block(&content);
+            if did_remove {
+                if dry_run {
+                    println!(
+                        "[dry-run] would remove rtk-instructions block from {}",
+                        instructions_path.display()
+                    );
+                } else {
+                    atomic_write(&instructions_path, &cleaned).with_context(|| {
+                        format!("Failed to write {}", instructions_path.display())
+                    })?;
+                }
+                removed.push(format!(
+                    "{}: removed rtk-instructions block",
+                    COPILOT_INSTRUCTIONS_FILE
+                ));
+            }
+        }
+    }
+
+    Ok(removed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6300,6 +6376,72 @@ mod tests {
         assert_eq!(v["hooks"]["PreToolUse"][0]["command"], "rtk hook copilot");
         assert_eq!(v["version"], 1);
         assert_eq!(v["hooks"]["preToolUse"][0]["bash"], "rtk hook copilot");
+    }
+
+    #[test]
+    fn test_copilot_uninstall_removes_hook_and_block() {
+        let temp = TempDir::new().unwrap();
+        run_copilot_at(temp.path(), InitContext::default()).unwrap();
+
+        let hook_path = temp
+            .path()
+            .join(".github")
+            .join("hooks")
+            .join("rtk-rewrite.json");
+        let instructions_path = temp.path().join(".github").join("copilot-instructions.md");
+        assert!(hook_path.exists());
+
+        let removed = uninstall_copilot_at(temp.path(), InitContext::default()).unwrap();
+
+        assert!(!removed.is_empty());
+        assert!(!hook_path.exists(), "hook config must be removed");
+        let instructions = fs::read_to_string(&instructions_path).unwrap();
+        assert!(
+            !instructions.contains(RTK_BLOCK_START),
+            "RTK block must be removed"
+        );
+    }
+
+    #[test]
+    fn test_copilot_uninstall_preserves_user_instructions() {
+        let temp = TempDir::new().unwrap();
+        let github_dir = temp.path().join(".github");
+        fs::create_dir_all(&github_dir).unwrap();
+        let instructions_path = github_dir.join("copilot-instructions.md");
+        fs::write(&instructions_path, "# My rules\n\nAlways use pnpm.\n").unwrap();
+
+        run_copilot_at(temp.path(), InitContext::default()).unwrap();
+        uninstall_copilot_at(temp.path(), InitContext::default()).unwrap();
+
+        let after = fs::read_to_string(&instructions_path).unwrap();
+        assert!(after.contains("Always use pnpm."), "user content preserved");
+        assert!(!after.contains(RTK_BLOCK_START), "RTK block removed");
+    }
+
+    #[test]
+    fn test_copilot_uninstall_dry_run_keeps_files() {
+        let temp = TempDir::new().unwrap();
+        run_copilot_at(temp.path(), InitContext::default()).unwrap();
+        let hook_path = temp
+            .path()
+            .join(".github")
+            .join("hooks")
+            .join("rtk-rewrite.json");
+
+        let ctx = InitContext {
+            verbose: 0,
+            dry_run: true,
+        };
+        uninstall_copilot_at(temp.path(), ctx).unwrap();
+
+        assert!(hook_path.exists(), "dry-run must not remove hook config");
+    }
+
+    #[test]
+    fn test_copilot_uninstall_nothing_when_absent() {
+        let temp = TempDir::new().unwrap();
+        let removed = uninstall_copilot_at(temp.path(), InitContext::default()).unwrap();
+        assert!(removed.is_empty(), "nothing to remove in a clean project");
     }
 
     #[test]

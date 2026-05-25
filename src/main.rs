@@ -1821,6 +1821,8 @@ fn run_cli() -> Result<i32> {
             };
             if show {
                 hooks::init::show_config(codex)?;
+            } else if uninstall && copilot {
+                hooks::init::uninstall_copilot(ctx)?;
             } else if uninstall {
                 uninstall_init_dispatch(
                     agent,
